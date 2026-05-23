@@ -24,7 +24,8 @@ import <utility>;
 
 export template <typename EventType>
 struct alignas(64) EventSlot {
-    EventType event_data;
+    // Store as raw storage to avoid forced default construction
+    alignas(alignof(EventType)) std::byte event_storage[sizeof(EventType)];
     alignas(64) std::atomic<uint64_t> sequence{0};
 };
 
@@ -35,10 +36,16 @@ private:
     static constexpr std::size_t Mask = Capacity - 1;
 
     alignas(64) EventSlot<EventType> ring_buffer_[Capacity];
-    
     alignas(64) std::atomic<uint64_t> producer_sequence_{0};
-    
     alignas(64) std::atomic<uint64_t> consumer_sequence_{0};
+
+    static inline void cpu_relax() noexcept {
+        #if defined(__x86_64__) || defined(_M_X64)
+        __builtin_ia32_pause();
+        #elif defined(__aarch64__)
+        asm volatile("yield" ::: "memory");
+        #endif
+    }
 
 public:
     NanosecondDispatcher() {
@@ -47,12 +54,18 @@ public:
         }
     }
 
-    ~NanosecondDispatcher() = default;
+    ~NanosecondDispatcher() {
+        // Safe explicit destruction of any remaining unconsumed elements
+        uint64_t head = consumer_sequence_.load(std::memory_order_relaxed);
+        uint64_t tail = producer_sequence_.load(std::memory_order_relaxed);
+        for (uint64_t i = head; i < tail; ++i) {
+            auto* slot = &ring_buffer_[i & Mask];
+            std::destroy_at(reinterpret_cast<EventType*>(slot->event_storage));
+        }
+    }
 
     NanosecondDispatcher(const NanosecondDispatcher&) = delete;
     NanosecondDispatcher& operator=(const NanosecondDispatcher&) = delete;
-    NanosecondDispatcher(NanosecondDispatcher&&) = delete;
-    NanosecondDispatcher& operator=(NanosecondDispatcher&&) = delete;
 
     template <typename... Args>
     void publish(Args&&... args) noexcept {
@@ -62,22 +75,19 @@ public:
         while (true) {
             slot = &ring_buffer_[ticket & Mask];
             uint64_t seq = slot->sequence.load(std::memory_order_acquire);
-            
-            if (seq == ticket) {
-                if (producer_sequence_.compare_exchange_weak(ticket, ticket + 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+            int64_t diff = static_cast<int64_t>(seq) - static_cast<int64_t>(ticket);
+
+            if (diff == 0) {
+                if (producer_sequence_.compare_exchange_weak(ticket, ticket + 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
                     break;
                 }
             } else {
-                #if defined(__x86_64__) || defined(_M_X64)
-                __builtin_ia32_pause();
-                #elif defined(__aarch64__)
-                asm volatile("yield" ::: "memory");
-                #endif
+                cpu_relax();
                 ticket = producer_sequence_.load(std::memory_order_relaxed);
             }
         }
 
-        slot->event_data = EventType{std::forward<Args>(args)...};
+        ::new (static_cast<void*>(slot->event_storage)) EventType(std::forward<Args>(args)...);
         slot->sequence.store(ticket + 1, std::memory_order_release);
     }
 
@@ -89,22 +99,23 @@ public:
         while (true) {
             slot = &ring_buffer_[ticket & Mask];
             uint64_t seq = slot->sequence.load(std::memory_order_acquire);
+            int64_t diff = static_cast<int64_t>(seq) - static_cast<int64_t>(ticket + 1);
 
-            if (seq == (ticket + 1)) {
-                if (consumer_sequence_.compare_exchange_weak(ticket, ticket + 1, std::memory_order_acquire, std::memory_order_relaxed)) {
+            if (diff == 0) {
+                if (consumer_sequence_.compare_exchange_weak(ticket, ticket + 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
                     break;
                 }
             } else {
-                #if defined(__x86_64__) || defined(_M_X64)
-                __builtin_ia32_pause();
-                #elif defined(__aarch64__)
-                asm volatile("yield" ::: "memory");
-                #endif
+                cpu_relax();
                 ticket = consumer_sequence_.load(std::memory_order_relaxed);
             }
         }
 
-        std::forward<EventHandler>(handler)(slot->event_data);
+        auto* item = reinterpret_cast<EventType*>(slot->event_storage);
+        std::forward<EventHandler>(handler)(*item);
+        std::destroy_at(item); 
+        
         slot->sequence.store(ticket + Capacity, std::memory_order_release);
     }
 };
+
