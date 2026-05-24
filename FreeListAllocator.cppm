@@ -13,7 +13,6 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://gnu.org>.
 
-
 export module FreeListAllocator;
 
 import <cstdint>;
@@ -88,7 +87,8 @@ public:
                 .tag = unpacked.tag + 1
             });
 
-            if (head_.compare_exchange_weak(current_head, next_head, std::memory_order_acquire, std::memory_order_acquire)) {
+
+            if (head_.compare_exchange_weak(current_head, next_head, std::memory_order_acquire, std::memory_order_relaxed)) {
                 return static_cast<void*>(&storage_[unpacked.index * 64]);
             }
         }
@@ -100,7 +100,7 @@ public:
         std::size_t offset = static_cast<std::byte*>(ptr) - storage_;
         uint32_t block_index = static_cast<uint32_t>(offset / 64);
 
-        uint64_t current_head = head_.load(std::memory_order_relaxed);
+        uint64_t current_head = head_.load(std::memory_order_acquire);
         uint32_t last_known_next = 0xFFFFFFFF;
 
         while (true) {
@@ -117,7 +117,7 @@ public:
                 .tag = unpacked.tag + 1
             });
 
-            if (head_.compare_exchange_weak(current_head, next_head, std::memory_order_release, std::memory_order_relaxed)) {
+            if (head_.compare_exchange_weak(current_head, next_head, std::memory_order_release, std::memory_order_acquire)) {
                 break;
             }
         }
