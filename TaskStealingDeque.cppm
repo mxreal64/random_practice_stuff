@@ -16,11 +16,7 @@
 
 export module TaskStealingDeque;
 
-import <cstdint>;
-import <cstddef>;
-import <atomic>;
-import <new>;
-import <utility>;
+import std;
 
 export template <typename TaskType, std::size_t Capacity>
 class TaskStealingDeque {
