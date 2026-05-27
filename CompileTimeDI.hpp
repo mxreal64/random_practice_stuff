@@ -15,13 +15,11 @@
 
 module;
 
-#include <cstddef>
-#include <type_traits>
-#include <utility>
-#include <tuple>
 #include <meta>
 
 export module CompileTimeDI;
+
+import std;
 
 namespace ctdi {
 
