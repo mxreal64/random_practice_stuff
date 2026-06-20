@@ -16,7 +16,7 @@
 
 export module SparsePageTable;
 
-import <cstring>;
+import std;
 
 export template <std::size_t BlockCount, std::size_t BlockSize = 64>
 class FixedSizeFreeList {
