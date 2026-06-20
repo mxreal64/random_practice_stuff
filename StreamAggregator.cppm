@@ -16,7 +16,6 @@
 
 export module StreamAggregator;
 
-import <cstdint>;
 import <cstddef>;
 import <atomic>;
 import <utility>;
