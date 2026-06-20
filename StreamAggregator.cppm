@@ -16,9 +16,7 @@
 
 export module StreamAggregator;
 
-import <utility>;
-import <cstring>;
-import <algorithm>;
+import std;
 
 export struct alignas(16) LogRecord {
     uint32_t length;
