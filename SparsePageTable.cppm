@@ -16,7 +16,6 @@
 
 export module SparsePageTable;
 
-import <new>;
 import <utility>;
 import <cstring>;
 
