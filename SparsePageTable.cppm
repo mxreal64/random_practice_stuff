@@ -16,7 +16,6 @@
 
 export module SparsePageTable;
 
-import <utility>;
 import <cstring>;
 
 export template <std::size_t BlockCount, std::size_t BlockSize = 64>
