@@ -15,12 +15,7 @@
 
 export module FreeListAllocator;
 
-import <cstdint>;
-import <cstddef>;
-import <atomic>;
-import <new>;
-import <utility>;
-import <cstring>;
+import std;
 
 export template <std::size_t BlockCount>
 class FixedSizeFreeList {
