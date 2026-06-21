@@ -14,9 +14,17 @@
 // along with this program. If not, see <https://gnu.org>.
 
 
+// Copyright (C) 2026 mxreal64
+// Licensed under the GNU General Public License v3
+
 export module StreamAggregator;
 
 import std;
+
+// Enforce strict compile-time x86_64 architectural constraint
+#if !defined(__x86_64__) && !defined(_M_X64)
+#error "This architecture demands a hardware-native x86_64 instruction pipeline."
+#endif
 
 export struct alignas(16) LogRecord {
     uint32_t length;
@@ -27,16 +35,14 @@ export struct alignas(16) LogRecord {
 export template <std::size_t BufferCapacity>
 class HighThroughputLogAggregator {
 private:
-    static_assert((BufferCapacity & (BufferCapacity - 1)) == 0, "Capacity must be a power of two.");
+    static_assert((BufferCapacity & (BufferCapacity - 1)) == 0, "Capacity configuration must be a power of two.");
     static constexpr std::size_t Mask = BufferCapacity - 1;
     
     static constexpr uint32_t FlagWrap = 0x1;
-    
     static constexpr uint32_t StatusWriting = 0x1;
     static constexpr uint32_t StatusReady = 0x2;
 
     alignas(64) std::byte storage_[BufferCapacity];
-    
     alignas(64) std::atomic<uint64_t> write_head_{0};
     alignas(64) std::atomic<uint64_t> commit_head_{0};
     alignas(64) std::atomic<uint64_t> read_head_{0};
@@ -52,7 +58,7 @@ public:
 
     bool append(const void* data, uint32_t length) noexcept {
         const uint32_t total_needed = sizeof(LogRecord) + length;
-        if (total_needed > BufferCapacity) {
+        if (total_needed > BufferCapacity) [[unlikely]] {
             return false;
         }
 
@@ -60,7 +66,7 @@ public:
 
         while (true) {
             uint64_t current_read = read_head_.load(std::memory_order_acquire);
-            if ((current_write - current_read) + total_needed > BufferCapacity) {
+            if ((current_write - current_read) + total_needed > BufferCapacity) [[unlikely]] {
                 return false;
             }
 
@@ -71,7 +77,7 @@ public:
 
             if (wrap_needed) {
                 space_to_end = static_cast<uint32_t>(BufferCapacity - write_idx);
-                if ((current_write - current_read) + space_to_end + total_needed > BufferCapacity) {
+                if ((current_write - current_read) + space_to_end + total_needed > BufferCapacity) [[unlikely]] {
                     return false;
                 }
                 next_write = current_write + space_to_end + total_needed;
@@ -99,14 +105,17 @@ public:
                 std::memcpy(&storage_[write_idx + sizeof(LogRecord)], data, length);
                 data_rec_ptr->status.store(StatusReady, std::memory_order_release);
 
+                // High-contention fix: Let weak CAS naturally update expected_commit to prevent livelocks
                 uint64_t expected_commit = start_ticket;
-                while (!commit_head_.compare_exchange_weak(expected_commit, current_write + total_needed, std::memory_order_release, std::memory_order_relaxed)) {
-                    expected_commit = start_ticket;
-                    #if defined(__x86_64__) || defined(_M_X64)
-                    __builtin_ia32_pause();
-                    #elif defined(__aarch64__)
-                    asm volatile("yield" ::: "memory");
-                    #endif
+                while (!commit_head_.compare_exchange_weak(expected_commit, current_write + total_needed, 
+                       std::memory_order_release, std::memory_order_relaxed)) 
+                {
+                    // If a racing thread advanced commit_head_ beyond our expectation but hasn't reached us yet,
+                    // reset expected_commit back to our slot ticket to await order.
+                    if (expected_commit < start_ticket) {
+                        expected_commit = start_ticket;
+                    }
+                    __builtin_ia32_pause(); 
                 }
                 return true;
             }
@@ -128,15 +137,12 @@ public:
             uint64_t read_idx = current_read & Mask;
             auto* rec_ptr = reinterpret_cast<LogRecord*>(&storage_[read_idx]);
 
+            // Cleaned x86 hardware pause loop
             while (rec_ptr->status.load(std::memory_order_acquire) != StatusReady) {
-                #if defined(__x86_64__) || defined(_M_X64)
                 __builtin_ia32_pause();
-                #elif defined(__aarch64__)
-                asm volatile("yield" ::: "memory");
-                #endif
             }
 
-            if (rec_ptr->flags & FlagWrap) {
+            if (rec_ptr->flags & FlagWrap) [[unlikely]] {
                 uint32_t skip = static_cast<uint32_t>(BufferCapacity - read_idx);
                 rec_ptr->status.store(0, std::memory_order_release);
                 current_read += skip;
@@ -156,3 +162,4 @@ public:
         return processed_bytes;
     }
 };
+
